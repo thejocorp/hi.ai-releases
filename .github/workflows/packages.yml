@@ -115,7 +115,8 @@ jobs:
   release:
     if: inputs.tag != ''
     needs: [bundles, static]
-    runs-on: ubuntu-22.04
+    # 24.04: 22.04 has no minisign package for the signature check
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     env:
