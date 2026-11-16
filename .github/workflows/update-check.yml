@@ -1,0 +1,86 @@
+# Checks that an installed hi.ai updates itself, on Linux (deb package and AppImage), Windows and macOS, before a release
+# depends on it. Each runner builds the app of one commit twice, as 0.0.1 and as 0.0.2, signs both with a throwaway key,
+# offers 0.0.2 in an update list on the runner itself, installs 0.0.1 and lets it update (tools/update-test).
+# It runs in hi.ai-releases next to the packages workflow (tools/publish-releases-repo) and needs only CODE_KEY.
+name: update-check
+run-name: update check of ${{ inputs.ref || 'main' }}
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or commit of the code to check. Empty checks main.
+        required: false
+permissions:
+  contents: read
+jobs:
+  update:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, kind: deb, bundle: deb, file: hi.ai.deb, platform: linux-x86_64-deb, other: linux-x86_64 }
+          - { os: ubuntu-22.04, kind: appimage, bundle: appimage, file: hi.ai.AppImage, platform: linux-x86_64, other: linux-x86_64-deb }
+          - { os: windows-latest, kind: windows, bundle: nsis, file: hi.ai-setup.exe, platform: windows-x86_64 }
+          - { os: macos-latest, kind: macos, bundle: app, file: hi.ai.app.tar.gz, platform: darwin-aarch64 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: thejocorp/hi.ai
+          ref: ${{ inputs.ref || 'main' }}
+          ssh-key: ${{ secrets.CODE_KEY }}
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev xvfb
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-binstall
+      - run: cargo binstall --locked -y tauri-cli@^2
+      - run: cargo build --release
+      - name: Server into place
+        shell: bash
+        run: |
+          triple=$(rustc -vV | sed -n 's/^host: //p')
+          ext=; [ "$RUNNER_OS" = Windows ] && ext=.exe
+          mkdir -p desktop/window/binaries
+          cp target/release/hi-ai$ext desktop/window/binaries/hi-ai-$triple$ext
+      - name: Two versions and an update list
+        shell: bash
+        working-directory: desktop/window
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          FILE: ${{ matrix.file }}
+          PLATFORM: ${{ matrix.platform }}
+          OTHER: ${{ matrix.other }}
+        run: |
+          cargo tauri signer generate --ci -p check -w "$RUNNER_TEMP/check.key" > /dev/null
+          export TAURI_SIGNING_PRIVATE_KEY="$(cat "$RUNNER_TEMP/check.key")" TAURI_SIGNING_PRIVATE_KEY_PASSWORD=check
+          for v in 0.0.1 0.0.2; do
+            jq -n --arg v "$v" --arg key "$(cat "$RUNNER_TEMP/check.key.pub")" '{version: $v, bundle: {createUpdaterArtifacts: true},
+              plugins: {updater: {pubkey: $key, endpoints: ["http://127.0.0.1:8765/latest.json"], dangerousInsecureTransportProtocol: true}}}' > "$RUNNER_TEMP/$v.json"
+            cargo tauri build --bundles ${{ matrix.bundle }} --config "$RUNNER_TEMP/$v.json"
+            f=$(find target/release/bundle -type f \( -name "*_${v}_*.deb" -o -name "*_${v}_*.AppImage" -o -name "*_${v}_*-setup.exe" -o -name '*.app.tar.gz' \) | head -n 1)
+            [ -n "$f" ] || { echo "::error::no $v package among the bundles"; exit 1; }
+            [ -f "$f.sig" ] || cargo tauri signer sign "$f" > /dev/null
+            mkdir -p "../../updates/$v"
+            cp "$f" "../../updates/$v/$FILE"
+            cp "$f.sig" "../../updates/$v/$FILE.sig"
+          done
+          # the other Linux package's entry points nowhere, so taking the wrong entry fails the check
+          jq -n --rawfile sig "../../updates/0.0.2/$FILE.sig" --arg file "$FILE" --arg platform "$PLATFORM" --arg other "$OTHER" \
+            '{version: "0.0.2", notes: "The update check.", pub_date: (now | todate),
+              platforms: ({($platform): {signature: ($sig | rtrimstr("\n")), url: "http://127.0.0.1:8765/\($file)"}}
+                + if $other == "" then {} else {($other): {signature: "none", url: "http://127.0.0.1:8765/missing"}} end)}' > ../../updates/0.0.2/latest.json
+      - name: 0.0.1 updates itself to 0.0.2
+        shell: bash
+        timeout-minutes: 15
+        env:
+          FILE: ${{ matrix.file }}
+        run: |
+          py=python3; [ "$RUNNER_OS" = Windows ] && py=python
+          $py -m http.server 8765 --bind 127.0.0.1 --directory updates/0.0.2 > http.log 2>&1 &
+          trap 'cat http.log' EXIT
+          for _ in $(seq 30); do curl -fsS -o /dev/null http://127.0.0.1:8765/latest.json && break; sleep 1; done
+          tools/update-test ${{ matrix.kind }} "updates/0.0.1/$FILE" http://127.0.0.1:8765/latest.json

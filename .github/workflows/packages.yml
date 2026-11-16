@@ -4,8 +4,8 @@
 # It runs in the public hi.ai-releases repository (tools/publish-releases-repo puts it there), which builds for free and
 # reads the private code with the read-only deploy key CODE_KEY. Started by hand without a tag it builds main only.
 # With a version tag of the code (v0.1.1) it makes a release there: signed update files, latest.json for the app's
-# updater, a test install with the install lines on Linux, Windows and macOS, and only when all of that passed the
-# release becomes the one people get. It needs the secrets CODE_KEY, TAURI_SIGNING_PRIVATE_KEY and
+# updater, a test install with the install lines on Linux, Windows and macOS, an update of the last release to this one
+# on each of them, and only when all of that passed the release becomes the one people get. It needs the secrets CODE_KEY, TAURI_SIGNING_PRIVATE_KEY and
 # TAURI_SIGNING_PRIVATE_KEY_PASSWORD and the variable UPDATER_PUBKEY (docs/RELEASING.md).
 name: packages
 run-name: ${{ inputs.tag && format('release {0}', inputs.tag) || 'build main' }}
@@ -220,8 +220,43 @@ jobs:
           for i in $(seq 60); do curl -fsSL -o /dev/null http://127.0.0.1:8650/ && break; sleep 1; done
           curl -fsSL http://127.0.0.1:8650/ | grep -q 'hi.ai' || { cat serve.log; exit 1; }
           kill "$pid"
+  # the last release, installed, updates itself to this one, the way people's apps will (tools/update-test)
+  update:
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, kind: deb, file: hi.ai-linux-amd64.deb }
+          - { os: ubuntu-22.04, kind: appimage, file: hi.ai-linux-x86_64.AppImage }
+          - { os: windows-latest, kind: windows, file: hi.ai-windows-x86_64-setup.exe }
+          - { os: macos-latest, kind: macos, file: hi.ai-macos-aarch64.app.tar.gz }
+    runs-on: ${{ matrix.os }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: thejocorp/hi.ai
+          ref: ${{ inputs.tag }}
+          ssh-key: ${{ secrets.CODE_KEY }}
+      - name: The last release
+        id: last
+        shell: bash
+        run: |
+          last=$(gh release list -R "$GITHUB_REPOSITORY" --exclude-pre-releases --exclude-drafts --limit 1 --json tagName -q '.[0].tagName')
+          [ -n "$last" ] || echo "::notice::no release before $TAG, so nothing to update from"
+          echo "tag=$last" >> "$GITHUB_OUTPUT"
+      - if: steps.last.outputs.tag != '' && runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y -q xvfb
+      - if: steps.last.outputs.tag != ''
+        shell: bash
+        timeout-minutes: 15
+        run: |
+          gh release download "${{ steps.last.outputs.tag }}" -R "$GITHUB_REPOSITORY" -p "${{ matrix.file }}" -D last
+          tools/update-test ${{ matrix.kind }} "last/${{ matrix.file }}" "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/latest.json"
   promote:
-    needs: install
+    needs: [install, update]
     runs-on: ubuntu-22.04
     permissions:
       contents: write

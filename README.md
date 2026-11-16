@@ -26,7 +26,7 @@ irm https://github.com/thejocorp/hi.ai-releases/releases/latest/download/install
 
 It installs hi.ai for your user, so it needs no admin rights, and adds it to the Start menu.
 
-**Updates.** When a new release is out, hi.ai asks you. Update now downloads it, checks its signature, installs it and opens hi.ai again; Later asks again at the next start. The server alone, without the app window, does not update itself: run the install line again.
+**Updates.** hi.ai looks for a new release when it starts and every hour after. When one is out, it asks you, and the status line at the bottom of every page shows "update to" with the new version until you take it. Update now downloads it, checks its signature, installs it and opens hi.ai again. On Linux the deb package asks for your password to install it. The server alone, without the app window, does not update itself: run the install line again.
 
 I develop and use hi.ai on Linux; the Windows and macOS builds are new, so tell me in an [issue](https://github.com/thejocorp/hi.ai-releases/issues) what breaks. Every release is installed with the lines above on Linux, Windows and macOS before it becomes the newest. The files are not signed by Apple or Microsoft, so a file you download in a browser gets a warning (on Windows: More info, then Run anyway; on a Mac: System Settings, Privacy & Security, Open Anyway). The install lines download without a browser and get none.
 
