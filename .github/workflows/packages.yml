@@ -1,0 +1,231 @@
+# Builds what a person downloads: the app window with the hi-ai server inside it (AppImage and deb, NSIS installer, dmg),
+# the plain server of each system, and a static Linux server for computers without a desktop.
+# Ubuntu 22.04 on purpose: the oldest glibc the runners have, so the result runs on older systems.
+# It runs in the public hi.ai-releases repository (tools/publish-releases-repo puts it there), which builds for free and
+# reads the private code with the read-only deploy key CODE_KEY. Started by hand without a tag it builds main only.
+# With a version tag of the code (v0.1.1) it makes a release there: signed update files, latest.json for the app's
+# updater, a test install with the install lines on Linux, Windows and macOS, and only when all of that passed the
+# release becomes the one people get. It needs the secrets CODE_KEY, TAURI_SIGNING_PRIVATE_KEY and
+# TAURI_SIGNING_PRIVATE_KEY_PASSWORD and the variable UPDATER_PUBKEY (docs/RELEASING.md).
+name: packages
+run-name: ${{ inputs.tag && format('release {0}', inputs.tag) || 'build main' }}
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Version tag of the code to release, for example v0.1.1. Empty builds main without a release.
+        required: false
+env:
+  TAG: ${{ inputs.tag }}
+permissions:
+  contents: read
+jobs:
+  bundles:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: thejocorp/hi.ai
+          ref: ${{ inputs.tag || 'main' }}
+          ssh-key: ${{ secrets.CODE_KEY }}
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-binstall
+      - run: cargo binstall --locked -y tauri-cli@^2
+      - run: cargo build --release
+      # the bundler wants the server as binaries/hi-ai-<target triple> and puts it next to the window as hi-ai
+      - name: Server into place
+        shell: bash
+        run: |
+          triple=$(rustc -vV | sed -n 's/^host: //p')
+          ext=; [ "$RUNNER_OS" = Windows ] && ext=.exe
+          mkdir -p desktop/window/binaries out
+          cp target/release/hi-ai$ext desktop/window/binaries/hi-ai-$triple$ext
+          cp target/release/hi-ai$ext out/hi-ai-${RUNNER_OS}$ext
+      # only a release build carries the updater's address and key; the window starts its updater only when they are there
+      - name: Release settings
+        if: inputs.tag != ''
+        shell: bash
+        working-directory: desktop/window
+        env:
+          PUBKEY: ${{ vars.UPDATER_PUBKEY }}
+        run: |
+          [ -n "$PUBKEY" ] || { echo "::error::the repository variable UPDATER_PUBKEY is missing (docs/RELEASING.md)"; exit 1; }
+          v=$(sed -n 's/^  "version": "\(.*\)",$/\1/p' tauri.conf.json)
+          [ "v$v" = "$TAG" ] || { echo "::error::the tag is $TAG, tauri.conf.json says $v (tools/release sets both)"; exit 1; }
+          printf '{"bundle":{"createUpdaterArtifacts":true},"plugins":{"updater":{"pubkey":"%s","endpoints":["https://github.com/%s/releases/latest/download/latest.json"]}}}' \
+            "$(printf %s "$PUBKEY" | tr -d '\r\n ')" "$GITHUB_REPOSITORY" > release.json
+          echo "RELEASE=--config release.json" >> "$GITHUB_ENV"
+      - name: Bundles
+        shell: bash
+        working-directory: desktop/window
+        env:
+          # linuxdeploy is an AppImage itself and the runners have no FUSE
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          case "$RUNNER_OS" in
+            Linux) bundles=appimage,deb ;;
+            Windows) bundles=nsis ;;
+            macOS) bundles=app,dmg ;;
+          esac
+          cargo tauri build --bundles $bundles ${RELEASE:-}
+          mkdir -p ../../out
+          find target/release/bundle -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*-setup.exe' -o -name '*.dmg' -o -name '*.app.tar.gz' \) > ../../files
+          while read -r f; do
+            # the updater needs a signature for each file it can install; the bundler does not make one for every kind
+            if [ -n "${RELEASE:-}" ] && [ "${f%.dmg}" = "$f" ] && [ ! -f "$f.sig" ]; then cargo tauri signer sign "$f" > /dev/null; fi
+            cp "$f" ../../out/
+            [ ! -f "$f.sig" ] || cp "$f.sig" ../../out/
+          done < ../../files
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ runner.os }}
+          path: out/*
+          if-no-files-found: error
+  static:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: thejocorp/hi.ai
+          ref: ${{ inputs.tag || 'main' }}
+          ssh-key: ${{ secrets.CODE_KEY }}
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          rustup target add x86_64-unknown-linux-musl
+      - run: cargo build --release --target x86_64-unknown-linux-musl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-linux-static
+          path: target/x86_64-unknown-linux-musl/release/hi-ai
+          if-no-files-found: error
+
+  # a test release first: the updater and the install lines only look at the latest release, which this is not yet
+  release:
+    if: inputs.tag != ''
+    needs: [bundles, static]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      PUBKEY: ${{ vars.UPDATER_PUBKEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: thejocorp/hi.ai
+          ref: ${{ inputs.tag || 'main' }}
+          ssh-key: ${{ secrets.CODE_KEY }}
+          path: src
+      - uses: actions/download-artifact@v4
+        with:
+          path: in
+      - name: Stable names
+        run: |
+          mkdir out
+          take() { f=$(find in -type f -name "$1" | head -n 1); [ -n "$f" ] || { echo "::error::no $1 among the packages"; exit 1; }; cp "$f" "out/$2"; }
+          take '*.AppImage' hi.ai-linux-x86_64.AppImage
+          take '*.AppImage.sig' hi.ai-linux-x86_64.AppImage.sig
+          take '*.deb' hi.ai-linux-amd64.deb
+          take '*.deb.sig' hi.ai-linux-amd64.deb.sig
+          take '*-setup.exe' hi.ai-windows-x86_64-setup.exe
+          take '*-setup.exe.sig' hi.ai-windows-x86_64-setup.exe.sig
+          take '*.dmg' hi.ai-macos-aarch64.dmg
+          take '*.app.tar.gz' hi.ai-macos-aarch64.app.tar.gz
+          take '*.app.tar.gz.sig' hi.ai-macos-aarch64.app.tar.gz.sig
+          take hi-ai hi-ai-linux-x86_64
+          # the install lines download the scripts of the newest release, so the scripts always fit its files
+          cp src/install.sh src/install.ps1 out/
+          cp src/desktop/window/icons/128x128.png out/hi.ai.png
+      # the check the updater makes before it installs anything, against the key the apps carry
+      - name: Signatures
+        working-directory: out
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q minisign
+          printf %s "$PUBKEY" | base64 -d > ../key.pub
+          for s in *.sig; do base64 -d "$s" > ../file.sig; minisign -V -q -p ../key.pub -x ../file.sig -m "${s%.sig}"; echo "signed: ${s%.sig}"; done
+      - name: The server inside the AppImage runs
+        working-directory: out
+        run: |
+          chmod +x hi.ai-linux-x86_64.AppImage hi-ai-linux-x86_64
+          ./hi.ai-linux-x86_64.AppImage --appimage-extract usr/bin/hi-ai > /dev/null
+          squashfs-root/usr/bin/hi-ai --version | grep -Fx "hi.ai ${TAG#v}"
+          ./hi-ai-linux-x86_64 --version | grep -Fx "hi.ai ${TAG#v}"
+          rm -rf squashfs-root
+      - name: Update list and test release
+        working-directory: out
+        run: |
+          # the tag's own text, which a checkout may have replaced by a plain tag
+          git -C ../src fetch -q --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          notes=$(git -C ../src tag -l --format='%(contents)' "$TAG")
+          url=https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG
+          jq -n --arg v "${TAG#v}" --arg notes "$notes" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg url "$url" \
+            --rawfile appimage hi.ai-linux-x86_64.AppImage.sig --rawfile deb hi.ai-linux-amd64.deb.sig \
+            --rawfile exe hi.ai-windows-x86_64-setup.exe.sig --rawfile app hi.ai-macos-aarch64.app.tar.gz.sig \
+            '{version: $v, notes: $notes, pub_date: $date, platforms: {
+               "linux-x86_64": {signature: ($appimage | rtrimstr("\n")), url: "\($url)/hi.ai-linux-x86_64.AppImage"},
+               "linux-x86_64-deb": {signature: ($deb | rtrimstr("\n")), url: "\($url)/hi.ai-linux-amd64.deb"},
+               "windows-x86_64": {signature: ($exe | rtrimstr("\n")), url: "\($url)/hi.ai-windows-x86_64-setup.exe"},
+               "darwin-aarch64": {signature: ($app | rtrimstr("\n")), url: "\($url)/hi.ai-macos-aarch64.app.tar.gz"}}}' > latest.json
+          printf '%s\n' "${notes:-hi.ai ${TAG#v}}" > ../notes.md
+          gh release create "$TAG" --target main --prerelease --title "hi.ai ${TAG#v}" --notes-file ../notes.md ./*
+  # the install lines from the README, run against this release as a person would run them, with its own scripts
+  install:
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            desktop: ":0"
+          - os: ubuntu-22.04
+            desktop: ""
+          - os: windows-latest
+          - os: macos-latest
+    runs-on: ${{ matrix.os }}
+    env:
+      HIAI_VERSION: ${{ inputs.tag }}
+      DISPLAY: ${{ matrix.desktop }}
+      HI_AI_ADDR: 127.0.0.1:8650
+    steps:
+      - if: runner.os != 'Windows'
+        run: curl -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/install.sh" | sh
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: irm "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:TAG/install.ps1" | iex
+      - name: The installed hi.ai answers
+        shell: bash
+        run: |
+          case "$RUNNER_OS-$DISPLAY" in
+            Linux-) hi=$HOME/.local/bin/hi-ai ;;
+            Linux-*) hi=/usr/bin/hi-ai; command -v hi-ai-window ;;
+            macOS-*) hi=$(ls -d /Applications/hi.ai.app "$HOME/Applications/hi.ai.app" 2> /dev/null | head -n 1)/Contents/MacOS/hi-ai ;;
+            Windows-*) hi="$(cygpath "$LOCALAPPDATA")/hi.ai/hi-ai.exe"; ls "$(dirname "$hi")" ;;
+          esac
+          "$hi" --version | tr -d '\r' | grep -Fx "hi.ai ${HIAI_VERSION#v}"
+          "$hi" serve > serve.log 2>&1 &
+          pid=$!
+          for i in $(seq 60); do curl -fsSL -o /dev/null http://127.0.0.1:8650/ && break; sleep 1; done
+          curl -fsSL http://127.0.0.1:8650/ | grep -q 'hi.ai' || { cat serve.log; exit 1; }
+          kill "$pid"
+  promote:
+    needs: install
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - run: gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --prerelease=false --latest
