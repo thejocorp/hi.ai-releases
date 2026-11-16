@@ -14,6 +14,7 @@ permissions:
   contents: read
 jobs:
   update:
+    name: update ${{ matrix.kind }}
     strategy:
       fail-fast: false
       matrix:
@@ -25,7 +26,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: thejocorp/hi.ai
           ref: ${{ inputs.ref || 'main' }}
