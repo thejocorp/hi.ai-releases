@@ -1,0 +1,45 @@
+# Published as .github/ISSUE_TEMPLATE/bug.yml of the public hi.ai-releases repository by tools/publish-releases-repo.
+name: Bug
+description: Something in hi.ai does not work as it should.
+title: "Bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: This page is public. Never paste API keys, tokens, passwords or a file path with your user name in it.
+  - type: input
+    id: version
+    attributes:
+      label: hi.ai version
+      description: The status line at the bottom of every page shows it, or run `hi-ai --version`.
+      placeholder: 0.1.3
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: System
+      description: The system, its version and the desktop, if there is one.
+      placeholder: Fedora 43, GNOME on Wayland
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what you saw instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to see it again
+      placeholder: |
+        1. Open Setup
+        2.
+  - type: textarea
+    id: error
+    attributes:
+      label: Error text
+      description: Copy the error text if there is one. Take out keys and your user name first.
+      render: text

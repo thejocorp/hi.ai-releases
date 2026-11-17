@@ -50,6 +50,19 @@ jobs:
           mkdir -p desktop/window/binaries out
           cp target/release/hi-ai$ext desktop/window/binaries/hi-ai-$triple$ext
           cp target/release/hi-ai$ext out/hi-ai-${RUNNER_OS}$ext
+      # the signed list the app reads, fetched and checked by the built server: a fetch that fails only warns, a refused list stops the job
+      - name: Signed list
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          ext=; [ "$RUNNER_OS" = Windows ] && ext=.exe
+          code=0
+          target/release/hi-ai$ext catalog check || code=$?
+          case $code in
+            0) ;;
+            3) echo "::warning::signed list: not fetched this time, the release goes on" ;;
+            *) echo "::error::signed list: refused, the release stops (the line above says why)"; exit 1 ;;
+          esac
       # only a release build carries the updater's address and key; the window starts its updater only when they are there
       - name: Release settings
         if: inputs.tag != ''
@@ -181,10 +194,13 @@ jobs:
                "windows-x86_64": {signature: ($exe | rtrimstr("\n")), url: "\($url)/hi.ai-windows-x86_64-setup.exe"},
                "darwin-aarch64": {signature: ($app | rtrimstr("\n")), url: "\($url)/hi.ai-macos-aarch64.app.tar.gz"}}}' > latest.json
           printf '%s\n' "${notes:-hi.ai ${TAG#v}}" > ../notes.md
+          # the install scripts check every download against this list (written outside out/ first so it does not list itself)
+          sha256sum -- * > ../SHA256SUMS
+          cp ../SHA256SUMS SHA256SUMS
           gh release create "$TAG" --target main --prerelease --title "hi.ai ${TAG#v}" --notes-file ../notes.md ./*
   # the install lines from the README, run against this release as a person would run them, with its own scripts
   install:
-    name: install ${{ matrix.os }}${{ matrix.desktop && ' with a desktop' || '' }}
+    name: install ${{ matrix.container || matrix.os }}${{ matrix.desktop && ' with a desktop' || '' }}
     needs: release
     strategy:
       fail-fast: false
@@ -194,19 +210,35 @@ jobs:
             desktop: ":0"
           - os: ubuntu-22.04
             desktop: ""
+          # the desktop path in the containers too: it is the one that runs the package manager
+          - os: ubuntu-22.04
+            container: debian:13
+            desktop: ":0"
+          - os: ubuntu-22.04
+            container: kalilinux/kali-rolling
+            desktop: ":0"
           - os: windows-latest
           - os: macos-latest
     runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
     env:
       HIAI_VERSION: ${{ inputs.tag }}
       DISPLAY: ${{ matrix.desktop }}
       HI_AI_ADDR: 127.0.0.1:8650
     steps:
+      - if: matrix.container
+        run: apt-get update -q && apt-get install -y -q curl ca-certificates
       - if: runner.os != 'Windows'
-        run: curl -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/install.sh" | sh
+        shell: bash
+        run: |
+          set -o pipefail
+          curl -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/install.sh" | sh 2>&1 | tee install.log
+          [ "$(tail -n 1 install.log)" = "hi.ai $TAG is installed and verified." ]
       - if: runner.os == 'Windows'
         shell: pwsh
-        run: irm "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:TAG/install.ps1" | iex
+        run: |
+          irm "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:TAG/install.ps1" | iex *>&1 | Tee-Object -FilePath install.log
+          if ((Get-Content install.log | Select-Object -Last 1).Trim() -ne "hi.ai $env:TAG is installed and verified.") { exit 1 }
       - name: The installed hi.ai answers
         shell: bash
         run: |

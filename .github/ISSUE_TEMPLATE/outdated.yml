@@ -1,0 +1,43 @@
+# Published as .github/ISSUE_TEMPLATE/outdated.yml of the public hi.ai-releases repository by tools/publish-releases-repo.
+# hi.ai's "Report outdated" link fills the first four fields by their ids (provider, model, version, catalog) and
+# nothing else.
+name: Outdated catalog entry
+description: A free model, limit, price or data term in hi.ai's list has changed.
+title: "Outdated: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: hi.ai fills the first four fields. This page is public. Never paste API keys or tokens.
+  - type: input
+    id: provider
+    attributes:
+      label: Provider
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      description: Leave it empty when the change is about the whole provider.
+  - type: input
+    id: version
+    attributes:
+      label: hi.ai version
+  - type: input
+    id: catalog
+    attributes:
+      label: Catalog date
+      description: The checked day of the list hi.ai used.
+  - type: textarea
+    id: change
+    attributes:
+      label: What changed
+      description: For example, the model is no longer free, or the daily limit is now 100 requests.
+    validations:
+      required: true
+  - type: input
+    id: source
+    attributes:
+      label: Where it says so
+      description: A link to the provider's own page, if you have one.

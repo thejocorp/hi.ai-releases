@@ -8,7 +8,7 @@
 
 ## Install
 
-Paste one line and press Enter. It downloads the newest release from the [releases page](https://github.com/thejocorp/hi.ai-releases/releases) and installs it. Start hi.ai and the setup wizard takes it from there.
+Paste one line and press Enter. It downloads the newest release from the [releases page](https://github.com/thejocorp/hi.ai-releases/releases) and installs it. From v0.1.3 on, each download is checked against the release's SHA256SUMS, and the line ends with "hi.ai vX.Y.Z is installed and verified." Start hi.ai and the setup wizard takes it from there.
 
 **Linux and macOS.** Open a terminal (on a Mac: the Terminal app, in Applications, Utilities) and paste:
 
