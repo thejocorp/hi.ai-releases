@@ -250,8 +250,9 @@ jobs:
           last=$(gh release list -R "$GITHUB_REPOSITORY" --exclude-pre-releases --exclude-drafts --limit 1 --json tagName -q '.[0].tagName')
           [ -n "$last" ] || echo "::notice::no release before $TAG, so nothing to update from"
           echo "tag=$last" >> "$GITHUB_OUTPUT"
+      # an AppImage takes graphics and font libraries from the desktop it runs on; a bare runner has none of them
       - if: steps.last.outputs.tag != '' && runner.os == 'Linux'
-        run: sudo apt-get update -q && sudo apt-get install -y -q xvfb
+        run: sudo apt-get update -q && sudo apt-get install -y -q xvfb libegl1 libgbm1 libfontconfig1 libfribidi0 libharfbuzz0b libwayland-client0
       - if: steps.last.outputs.tag != ''
         shell: bash
         timeout-minutes: 15
